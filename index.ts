@@ -64,10 +64,5 @@ const app = new web.WebApp("fa", {
     },
 });
 
-// storage for photos
-const photoContainer = new storage.BlobContainer("photos", {
-    accountName: storageAccount.name,
-    resourceGroupName: resourceGroup.name
-});
 
 
