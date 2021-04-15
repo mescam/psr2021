@@ -3,7 +3,6 @@ const { v4 } = require("uuid");
 
 module.exports = async function (context, req) {
     const body = req.body;
-    console.log(body);
 
     // constants
     const connString = process.env["PhotoContainerConnString"];
@@ -11,8 +10,7 @@ module.exports = async function (context, req) {
     const requestId = v4();
 
     // variables from input
-    console.log(body.photo);
-    const photo = Buffer.from(body.photo, 'base64').toString("binary");
+    const photo = Buffer.from(body.photo, 'base64')
     const fileName = body.name;
 
     // connect to azure blob storage
