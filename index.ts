@@ -18,12 +18,7 @@ const storageAccount = new storage.StorageAccount("sa", {
     kind: storage.Kind.StorageV2,
 });
 
-// Export the primary key of the Storage Account
-// const storageAccountKeys = pulumi.all([resourceGroup.name, storageAccount.name]).apply(([resourceGroupName, accountName]) =>
-//     storage.listStorageAccountKeys({ resourceGroupName, accountName }));
-// export const primaryStorageKey = storageAccountKeys.keys[0].value;
-
-// Blob container
+// Blob container - code
 const codeContainer = new storage.BlobContainer("codecontainer", {
     accountName: storageAccount.name,
     resourceGroupName: resourceGroup.name
@@ -47,6 +42,14 @@ const plan = new web.AppServicePlan("plan", {
 const storageConnectionString = helpers.getConnectionString(resourceGroup.name, storageAccount.name);
 const codeBlobUrl = helpers.signedBlobReadUrl(codeBlob, codeContainer, storageAccount, resourceGroup);
 
+// Blob container for photos
+const photosContainer = new storage.BlobContainer("photoscontainer", {
+    accountName: storageAccount.name,
+    resourceGroupName: resourceGroup.name,
+    containerName: "photos"
+});
+
+
 const app = new web.WebApp("fa", {
     resourceGroupName: resourceGroup.name,
     serverFarmId: plan.id,
@@ -58,11 +61,15 @@ const app = new web.WebApp("fa", {
             { name: "FUNCTIONS_WORKER_RUNTIME", value: "node" },
             { name: "WEBSITE_NODE_DEFAULT_VERSION", value: "~14" },
             { name: "WEBSITE_RUN_FROM_PACKAGE", value: codeBlobUrl },
+            { name: "PhotoContainerConnString", value: storageConnectionString }, 
+            { name: "PhotoContainerName", value: photosContainer.name }
         ],
         http20Enabled: true,
         nodeVersion: "~14",
     },
 });
+
+
 
 
 
