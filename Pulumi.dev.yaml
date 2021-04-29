@@ -1,3 +1,3 @@
-encryptionsalt: v1:Dy06pbGnuWA=:v1:OpHSXSB16BJ4npT1:1rwJlDNCQSBmYncfN108BU5aK8uFBg==
+encryptionsalt: v1:WBY5M45g6gw=:v1:qmOqpG+Gp2vnIV13:+Ek80agQSswGA8vI+ey/Qq/VpbGKdQ==
 config:
-  azure-native:location: WestEurope
+  azure:location: WestEurope

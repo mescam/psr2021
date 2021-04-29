@@ -1,9 +1,0 @@
-{
-  "name": "javascript",
-  "version": "1.0.0",
-  "description": "",
-  "dependencies": {
-    "@azure/storage-blob": "^12.5.0",
-    "uuid": "^8.3.2"
-  }
-}

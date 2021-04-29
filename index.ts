@@ -1,75 +1,101 @@
 import * as pulumi from "@pulumi/pulumi";
-import * as resources from "@pulumi/azure-native/resources";
-import * as storage from "@pulumi/azure-native/storage";
-import * as web from "@pulumi/azure-native/web";
-import * as helpers from "./helpers";
+import * as azure from "@pulumi/azure";
+import { createTableService } from "azure-storage";
 
 // Create an Azure Resource Group
-const resourceGroup = new resources.ResourceGroup("resourceGroup", {
-    resourceGroupName: "sandbox-jakub-wozniak-1"
+const resourceGroup = new azure.core.ResourceGroup("resourceGroup", {
+  name: "jakub-wozniak-sandbox-3",
 });
 
 // Create an Azure resource (Storage Account)
-const storageAccount = new storage.StorageAccount("sa", {
-    resourceGroupName: resourceGroup.name,
-    sku: {
-        name: storage.SkuName.Standard_LRS,
-    },
-    kind: storage.Kind.StorageV2,
+const account = new azure.storage.Account("storage", {
+  // The location for the storage account will be derived automatically from the resource group.
+  resourceGroupName: resourceGroup.name,
+  accountTier: "Standard",
+  accountReplicationType: "LRS",
 });
 
-// Blob container - code
-const codeContainer = new storage.BlobContainer("codecontainer", {
-    accountName: storageAccount.name,
-    resourceGroupName: resourceGroup.name
+// Export the connection string for the storage account
+export const connectionString = account.primaryConnectionString;
+
+const photosContainer = new azure.storage.Container("photoscontainer", {
+  storageAccountName: account.name,
+  name: "photos",
 });
 
-const codeBlob = new storage.Blob("zip", {
-    resourceGroupName: resourceGroup.name,
-    accountName: storageAccount.name,
-    containerName: codeContainer.name,
-    source: new pulumi.asset.FileArchive("./javascript")
+const photosQueue = new azure.storage.Queue("photosqueue", {
+  storageAccountName: account.name,
+  name: "photos-queue",
 });
 
-const plan = new web.AppServicePlan("plan", {
-    resourceGroupName: resourceGroup.name,
-    sku: {
-        name: "Y1",
-        tier: "Dynamic"
-    }
+const photosTable = new azure.storage.Table("photostable", {
+  storageAccountName: account.name,
+  name: "photos-items",
 });
 
-const storageConnectionString = helpers.getConnectionString(resourceGroup.name, storageAccount.name);
-const codeBlobUrl = helpers.signedBlobReadUrl(codeBlob, codeContainer, storageAccount, resourceGroup);
+// Functions
 
-// Blob container for photos
-const photosContainer = new storage.BlobContainer("photoscontainer", {
-    accountName: storageAccount.name,
-    resourceGroupName: resourceGroup.name,
-    containerName: "photos"
+const uploadFn = new azure.appservice.HttpFunction("upload", {
+  route: "upload",
+  methods: ["POST"],
+  callback: async (context, req) => {
+    const { BlobServiceClient } = require("@azure/storage-blob");
+    const { QueueServiceClient } = require("@azure/storage-queue");
+    const { v4 } = require("uuid");
+
+    const body = req.body;
+
+    // constants
+    const connString = connectionString.get();
+    const photoContainerName = photosContainer.name.get();
+    const photoQueueName = photosQueue.name.get();
+    const photoTableName = photosTable.name.get();
+    const requestId = v4();
+
+    // variables from input
+    const photo = Buffer.from(body.photo, "base64");
+    const fileName = body.name;
+
+    // connect to azure blob storage
+    const blobServiceClient = BlobServiceClient.fromConnectionString(
+      connString
+    );
+    const container = blobServiceClient.getContainerClient(photoContainerName);
+    const result = await container.uploadBlockBlob(
+      `${requestId}.png`,
+      photo,
+      photo.length
+    );
+
+    // add job to queue
+    const queueServiceClient = QueueServiceClient.fromConnectionString(
+      connString
+    );
+    const queue = queueServiceClient.getQueueClient(photoQueueName);
+    const result2 = await queue.sendMessage(
+      new Buffer(JSON.stringify({ req: requestId })).toString("base64")
+    );
+
+    // save to database
+    const tableService = createTableService(connString);
+
+    // output
+    return {
+      status: 200,
+      body: {
+        requestId: requestId,
+      },
+    };
+  },
 });
 
-
-const app = new web.WebApp("fa", {
-    resourceGroupName: resourceGroup.name,
-    serverFarmId: plan.id,
-    kind: "functionapp",
-    siteConfig: {
-        appSettings: [
-            { name: "AzureWebJobsStorage", value: storageConnectionString },
-            { name: "FUNCTIONS_EXTENSION_VERSION", value: "~3" },
-            { name: "FUNCTIONS_WORKER_RUNTIME", value: "node" },
-            { name: "WEBSITE_NODE_DEFAULT_VERSION", value: "~14" },
-            { name: "WEBSITE_RUN_FROM_PACKAGE", value: codeBlobUrl },
-            { name: "PhotoContainerConnString", value: storageConnectionString }, 
-            { name: "PhotoContainerName", value: photosContainer.name }
-        ],
-        http20Enabled: true,
-        nodeVersion: "~14",
-    },
+photosQueue.onEvent("newPhotoFn", {
+  callback: async (context, message) => {
+    console.log("hello ->" + message);
+  },
 });
 
-
-
-
-
+const app = new azure.appservice.MultiCallbackFunctionApp("application", {
+  resourceGroupName: resourceGroup.name,
+  functions: [uploadFn],
+});
