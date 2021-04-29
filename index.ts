@@ -1,6 +1,6 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as azure from "@pulumi/azure";
-import { createTableService } from "azure-storage";
+import * as storage from "azure-storage";
 import { BlobServiceClient } from "@azure/storage-blob";
 import { QueueServiceClient } from "@azure/storage-queue";
 import { v4 } from "uuid";
@@ -37,6 +37,48 @@ const photosTable = new azure.storage.Table("photostable", {
 });
 
 // Functions
+const listFn = new azure.appservice.HttpFunction("list", {
+  route: "list",
+  methods: ["GET"],
+  callback: async (context, req) => {
+    // consts
+    const photoTableName = photosTable.name.get();
+    const connString = connectionString.get();
+
+    // table svc
+    const tableService = storage.createTableService(connString);
+    const query = new storage.TableQuery();
+
+    const result = await new Promise((resolve, reject) => {
+      tableService.queryEntities(
+        photoTableName,
+        query,
+        (null as unknown) as storage.TableService.TableContinuationToken,
+        function (error, result, response) {
+          if (error) {
+            reject(error);
+          } else {
+            resolve(result);
+          }
+        }
+      );
+    });
+    console.log((result as any).entries);
+    // [{PartitionKey: { '$': 'Edm.String', _: 'd1d15824-e06e-4b2e-81a7-03c08b9cb2e5' },RowKey: { '$': 'Edm.String', _: '1' },
+    // Timestamp: { '$': 'Edm.DateTime', _: 2021-04-29T06:41:24.551Z },processingState: { _: 'QUEUED' },result: { _: false },'.metadata': { etag: `W/"datetime'2021-04-29T06%3A41%3A24.5519623Z'"` }}]
+    const entries = (result as any).entries.map((x: any) => ({
+      requestId: x.PartitionKey["_"],
+      timestamp: x.Timestamp["_"],
+      state: x.processingState["_"],
+      result: x.result["_"],
+    }));
+
+    return {
+      status: 200,
+      body: entries,
+    };
+  },
+});
 
 const uploadFn = new azure.appservice.HttpFunction("upload", {
   route: "upload",
@@ -72,11 +114,31 @@ const uploadFn = new azure.appservice.HttpFunction("upload", {
     );
     const queue = queueServiceClient.getQueueClient(photoQueueName);
     await queue.sendMessage(
-      new Buffer(JSON.stringify({ req: requestId })).toString("base64")
+      Buffer.from(JSON.stringify({ req: requestId })).toString("base64")
     );
 
     // save to database
-    const tableService = createTableService(connString);
+    const tableService = storage.createTableService(connString);
+    const entGen = storage.TableUtilities.entityGenerator;
+    const entry = {
+      PartitionKey: entGen.String(requestId),
+      RowKey: entGen.String("1"),
+      processingState: entGen.String("QUEUED"),
+      result: entGen.Boolean(false),
+    };
+    await new Promise((resolve, reject) => {
+      tableService.insertEntity(
+        photoTableName,
+        entry,
+        function (error, result, response) {
+          if (!error) {
+            resolve(result);
+          } else {
+            reject(error);
+          }
+        }
+      );
+    });
 
     // output
     return {
@@ -90,11 +152,36 @@ const uploadFn = new azure.appservice.HttpFunction("upload", {
 
 photosQueue.onEvent("newPhotoFn", {
   callback: async (context, message) => {
-    console.log("hello ->" + message);
+    // consts
+    const photoTableName = photosTable.name.get();
+    const connString = connectionString.get();
+
+    // table svc
+    const tableService = storage.createTableService(connString);
+    const entGen = storage.TableUtilities.entityGenerator;
+    const entry = {
+      PartitionKey: entGen.String(message.req),
+      RowKey: entGen.String("1"),
+      processingState: entGen.String("FINISHED"),
+      result: entGen.Boolean(true),
+    };
+    await new Promise((resolve, reject) => {
+      tableService.insertOrMergeEntity(
+        photoTableName,
+        entry,
+        function (error, result, response) {
+          if (!error) {
+            resolve(result);
+          } else {
+            reject(error);
+          }
+        }
+      );
+    });
   },
 });
 
 new azure.appservice.MultiCallbackFunctionApp("application", {
   resourceGroupName: resourceGroup.name,
-  functions: [uploadFn],
+  functions: [uploadFn, listFn],
 });
