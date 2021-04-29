@@ -1,6 +1,9 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as azure from "@pulumi/azure";
 import { createTableService } from "azure-storage";
+import { BlobServiceClient } from "@azure/storage-blob";
+import { QueueServiceClient } from "@azure/storage-queue";
+import { v4 } from "uuid";
 
 // Create an Azure Resource Group
 const resourceGroup = new azure.core.ResourceGroup("resourceGroup", {
@@ -30,7 +33,7 @@ const photosQueue = new azure.storage.Queue("photosqueue", {
 
 const photosTable = new azure.storage.Table("photostable", {
   storageAccountName: account.name,
-  name: "photos-items",
+  name: "photos",
 });
 
 // Functions
@@ -39,10 +42,6 @@ const uploadFn = new azure.appservice.HttpFunction("upload", {
   route: "upload",
   methods: ["POST"],
   callback: async (context, req) => {
-    const { BlobServiceClient } = require("@azure/storage-blob");
-    const { QueueServiceClient } = require("@azure/storage-queue");
-    const { v4 } = require("uuid");
-
     const body = req.body;
 
     // constants
@@ -72,7 +71,7 @@ const uploadFn = new azure.appservice.HttpFunction("upload", {
       connString
     );
     const queue = queueServiceClient.getQueueClient(photoQueueName);
-    const result2 = await queue.sendMessage(
+    await queue.sendMessage(
       new Buffer(JSON.stringify({ req: requestId })).toString("base64")
     );
 
@@ -95,7 +94,7 @@ photosQueue.onEvent("newPhotoFn", {
   },
 });
 
-const app = new azure.appservice.MultiCallbackFunctionApp("application", {
+new azure.appservice.MultiCallbackFunctionApp("application", {
   resourceGroupName: resourceGroup.name,
   functions: [uploadFn],
 });
