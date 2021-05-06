@@ -1,9 +1,11 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as azure from "@pulumi/azure";
 import * as storage from "azure-storage";
-import { BlobServiceClient } from "@azure/storage-blob";
+import { BlobSASPermissions, BlobServiceClient } from "@azure/storage-blob";
 import { QueueServiceClient } from "@azure/storage-queue";
 import { v4 } from "uuid";
+import { ComputerVisionClient } from "@azure/cognitiveservices-computervision";
+import { CognitiveServicesCredentials } from "@azure/ms-rest-azure-js";
 
 // Create an Azure Resource Group
 const resourceGroup = new azure.core.ResourceGroup("resourceGroup", {
@@ -36,6 +38,12 @@ const photosTable = new azure.storage.Table("photostable", {
   name: "photos",
 });
 
+const computerVisionApi = new azure.cognitive.Account("computervision", {
+  resourceGroupName: resourceGroup.name,
+  kind: "ComputerVision",
+  skuName: "F0",
+});
+
 // Functions
 const listFn = new azure.appservice.HttpFunction("list", {
   route: "list",
@@ -43,6 +51,7 @@ const listFn = new azure.appservice.HttpFunction("list", {
   callback: async (context, req) => {
     // consts
     const photoTableName = photosTable.name.get();
+    const photoContainerName = photosContainer.name.get();
     const connString = connectionString.get();
 
     // table svc
@@ -154,7 +163,39 @@ photosQueue.onEvent("newPhotoFn", {
   callback: async (context, message) => {
     // consts
     const photoTableName = photosTable.name.get();
+    const photoContainerName = photosContainer.name.get();
     const connString = connectionString.get();
+    const cvKey = computerVisionApi.primaryAccessKey.get();
+    const cvEndp = computerVisionApi.endpoint.get();
+
+    // get sas token
+    const blobServiceClient = BlobServiceClient.fromConnectionString(
+      connString
+    );
+    const blobClient = blobServiceClient
+      .getContainerClient(photoContainerName)
+      .getBlobClient(message.req + ".png");
+    const sasUrl = await blobClient.generateSasUrl({
+      permissions: BlobSASPermissions.parse("r"),
+      startsOn: new Date(),
+      expiresOn: new Date(new Date().valueOf() + 86400),
+    });
+    console.log(sasUrl);
+
+    // process image
+    const cvCreds = new CognitiveServicesCredentials(cvKey);
+    const cvClient = new ComputerVisionClient(cvCreds, cvEndp);
+    const detection = await cvClient.detectObjects(sasUrl, {});
+    console.log(detection.objects);
+
+    const result =
+      (detection.objects &&
+        detection.objects.filter(
+          (x) => x.object == "Hot dog" && x.confidence && x.confidence > 0.6
+        ).length > 0) ||
+      false;
+
+    console.log(result);
 
     // table svc
     const tableService = storage.createTableService(connString);
@@ -163,7 +204,7 @@ photosQueue.onEvent("newPhotoFn", {
       PartitionKey: entGen.String(message.req),
       RowKey: entGen.String("1"),
       processingState: entGen.String("FINISHED"),
-      result: entGen.Boolean(true),
+      result: entGen.Boolean(result),
     };
     await new Promise((resolve, reject) => {
       tableService.insertOrMergeEntity(
